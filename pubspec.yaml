@@ -1,0 +1,66 @@
+name: pawsitive_care_app
+description: "A new Flutter project."
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  image_picker: ^1.1.2
+  cupertino_icons: ^1.0.8
+  timezone: ^0.9.4
+  shared_preferences: ^2.5.2
+  file_picker: ^9.0.1
+  intl: ^0.20.2
+  url_launcher: ^6.3.1
+  fluttertoast: ^8.2.12
+  google_fonts: ^6.2.1
+  cloud_firestore: ^5.6.5
+  firebase_core: ^3.12.1
+  firebase_auth: ^5.5.1
+  firebase_database: ^11.3.4
+  firebase_storage: ^12.4.4
+  path_provider: ^2.1.5
+  flutter_time_picker_spinner: ^2.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/login_bg.png
+    - assets/images/user_bg.png
+    - assets/images/petprofile_bg.jpg
+    - assets/images/expense_bg.jpg
+    - assets/images/grooming_bg.jpg
+    - assets/images/g1.png
+    - assets/images/g2.png
+    - assets/images/g3.png
+    - assets/images/g4.png
+    - assets/images/diet_bg.jpg
+    - assets/images/food1.png
+    - assets/images/food2.jpg
+    - assets/images/food3.jpg
+    - assets/images/food4.jpg
+    - assets/images/vaccination_bg.jpg
+    - assets/images/vet_bg.jpg
+    - assets/images/m1.jpeg
+    - assets/images/m2.jpeg
+    - assets/images/m3.jpeg
+    - assets/images/m4.jpeg
+    - assets/images/adopt_bg.jpg
+    - assets/images/d1.jpg
+    - assets/images/d2.jpg
+    - assets/images/r1.jpg
+    - assets/images/r2.jpg
+    - assets/images/r3.jpg
+    - assets/images/f1.jpeg
+    - assets/images/f3.jpeg
+    - assets/images/f2.png
+    - assets/images/feedback_bg.png

@@ -1,0 +1,11 @@
+# Flutter/Dart related 
+.dart_tool/ 
+.flutter-plugins 
+.flutter-plugins-dependencies 
+.idea/ 
+.vscode/ 
+build/ 
+*.apk 
+*.aab 
+# OS-related 
+.DS_Store 

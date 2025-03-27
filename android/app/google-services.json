@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "21184883793",
+    "project_id": "pet-wellness-app-27be4",
+    "storage_bucket": "pet-wellness-app-27be4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:21184883793:android:168f789a634c9a5a075c70",
+        "android_client_info": {
+          "package_name": "com.example.pet_wellness_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCg0SZpgFgt8fZcL_uLVCtOVzV0Ed4HUqE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

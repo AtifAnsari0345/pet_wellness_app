@@ -1,0 +1,1 @@
+-keep class com.example.pet_wellness_app.MainActivity { *; }
