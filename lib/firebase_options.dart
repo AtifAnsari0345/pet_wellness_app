@@ -41,7 +41,7 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDMSD330IZ-_aYL-p4h_hy5aYWeVbheAtA',
+    apiKey: 'API_KEY_1',
     appId: '1:21184883793:web:9f75288aeb195bb9075c70',
     messagingSenderId: '21184883793',
     projectId: 'pet-wellness-app-27be4',
@@ -50,7 +50,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyCg0SZpgFgt8fZcL_uLVCtOVzV0Ed4HUqE',
+    apiKey: 'API_KEY_2',
     appId: '1:21184883793:android:168f789a634c9a5a075c70',
     messagingSenderId: '21184883793',
     projectId: 'pet-wellness-app-27be4',
@@ -58,7 +58,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyDK4PwztKH7HNvIdt44s9YRMqvaLVasZQo',
+    apiKey: 'API_KEY_3',
     appId: '1:21184883793:ios:d24228e39ab04044075c70',
     messagingSenderId: '21184883793',
     projectId: 'pet-wellness-app-27be4',
@@ -67,7 +67,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
-    apiKey: 'AIzaSyDK4PwztKH7HNvIdt44s9YRMqvaLVasZQo',
+    apiKey: 'API_KEY_3',
     appId: '1:21184883793:ios:d24228e39ab04044075c70',
     messagingSenderId: '21184883793',
     projectId: 'pet-wellness-app-27be4',
@@ -76,7 +76,7 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
-    apiKey: 'AIzaSyDMSD330IZ-_aYL-p4h_hy5aYWeVbheAtA',
+    apiKey: 'API_KEY_1',
     appId: '1:21184883793:web:f0d6a96d355008e9075c70',
     messagingSenderId: '21184883793',
     projectId: 'pet-wellness-app-27be4',
