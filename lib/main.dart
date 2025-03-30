@@ -1,18 +1,24 @@
 // ignore_for_file: library_private_types_in_public_api, use_build_context_synchronously
 
+import 'dart:math' as math;
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/material.dart';
-import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
+import 'dart:io';
+import 'package:permission_handler/permission_handler.dart';
 import 'dart:convert';
 import 'firebase_options.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'auth_service.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz;
 
 // ===============================
 // GLOBAL VARIABLES
@@ -968,10 +974,9 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
   final _emailController = TextEditingController();
   final _addressController = TextEditingController();
   Uint8List? _profileImage;
-  final ImagePicker _picker = ImagePicker();
+  String? _selectedGender;
   bool _isChanged = false;
 
-  // Firebase Firestore and Firebase Auth instances
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
@@ -982,13 +987,19 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
   }
 
   Future<void> _pickProfilePhoto() async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      final imageBytes = await image.readAsBytes();
-      setState(() {
-        _profileImage = imageBytes;
-        _isChanged = true;
-      });
+    if (await Permission.photos.request().isGranted) {
+      final XFile? image = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (image != null) {
+        final imageBytes = await image.readAsBytes();
+        setState(() {
+          _profileImage = imageBytes;
+          _isChanged = true;
+        });
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Photo permission is required")),
+      );
     }
   }
 
@@ -1005,46 +1016,44 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
   Future<void> _saveProfile() async {
     if (_formKey.currentState!.validate()) {
       try {
-        // Get current user
         User? user = _auth.currentUser;
         if (user == null) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Please log in first!')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Please log in first!')),
+          );
           return;
         }
 
-        String? photoUrl = '';
-        // If image is not null, store a placeholder URL (no image upload to Firebase Storage)
-        if (_profileImage != null) {
-          photoUrl = 'https://example.com/default-profile-image.png'; // Replace with your default image URL
-        }
-
-        // Save or update data in Firestore
         await _firestore.collection('users').doc(user.uid).set({
           'name': _nameController.text.trim(),
           'phone': _phoneController.text.trim(),
           'email': _emailController.text.trim(),
           'address': _addressController.text.trim(),
-          'profile_image': photoUrl,  // This can be a URL or null
-        }, SetOptions(merge: true)); // Merge to update fields instead of overwriting the document
+          'gender': _selectedGender,
+        }, SetOptions(merge: true));
 
         setState(() {
           _isChanged = false;
         });
 
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Profile saved successfully!')),
+          const SnackBar(
+            content: Text('Profile saved successfully!'),
+            backgroundColor: Colors.green,
+          ),
         );
       } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving profile: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving profile: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please complete the profile with valid details!')),
-      );
     }
   }
 
-  void _loadProfile() async {
+  Future<void> _loadProfile() async {
     User? user = _auth.currentUser;
     if (user != null) {
       DocumentSnapshot userDoc = await _firestore.collection('users').doc(user.uid).get();
@@ -1055,27 +1064,75 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
           _phoneController.text = data['phone'] ?? '';
           _emailController.text = data['email'] ?? '';
           _addressController.text = data['address'] ?? '';
+          _selectedGender = data['gender'] ?? 'Male';
+        });
+      } else {
+        setState(() {
+          _selectedGender = 'Male';
         });
       }
     }
   }
 
   void _logout() {
-    _auth.signOut();
-    Navigator.pushReplacementNamed(context, '/login');
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Are you sure you want to logout?'),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.black54)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                _auth.signOut();
+                Navigator.pushReplacementNamed(context, '/login');
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Logout', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, {bool isNumeric = false}) {
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumeric = false}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      padding: const EdgeInsets.symmetric(vertical: 6.0), // Reduced vertical padding
       child: TextFormField(
         controller: controller,
         keyboardType: isNumeric ? TextInputType.phone : TextInputType.text,
+        style: const TextStyle(fontSize: 14), // Slightly smaller font
         decoration: InputDecoration(
           labelText: label,
+          prefixIcon: Icon(icon, color: Colors.purple.shade300, size: 20), // Smaller icon
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12), // Slightly smaller radius
+            borderSide: const BorderSide(color: Colors.purple, width: 1.2),
           ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.purple.shade400, width: 1.5),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.purple.shade200, width: 1.2),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.red, width: 1.2),
+          ),
+          filled: true,
+          fillColor: Colors.white.withAlpha((0.9 * 255).toInt()),
+          labelStyle: TextStyle(color: Colors.purple.shade700, fontSize: 14),
         ),
         validator: (value) {
           if (value == null || value.trim().isEmpty) {
@@ -1087,13 +1144,62 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
           if (!isNumeric && label == "Email" && !isValidEmail(value.trim())) {
             return 'Enter a valid email address';
           }
-          return null; // No error
+          return null;
         },
         onChanged: (value) {
           setState(() {
-            _isChanged = true; // Update state
+            _isChanged = true;
           });
         },
+      ),
+    );
+  }
+
+  Widget _buildGenderDropdown() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: DropdownButtonFormField<String>(
+        value: _selectedGender,
+        decoration: InputDecoration(
+          labelText: 'Gender',
+          prefixIcon: Icon(Icons.person, color: Colors.purple.shade300, size: 20),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.purple, width: 1.2),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.purple.shade400, width: 1.5),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.purple.shade200, width: 1.2),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.red, width: 1.2),
+          ),
+          filled: true,
+          fillColor: Colors.white.withAlpha((0.9 * 255).toInt()),
+          labelStyle: TextStyle(color: Colors.purple.shade700, fontSize: 14),
+        ),
+        items: ['Male', 'Female'].map((String gender) {
+          return DropdownMenuItem<String>(
+            value: gender,
+            child: Text(gender, style: const TextStyle(fontSize: 14)),
+          );
+        }).toList(),
+        onChanged: (String? newValue) {
+          setState(() {
+            _selectedGender = newValue;
+            _profileImage = null;
+            _isChanged = true;
+          });
+        },
+        validator: (value) => value == null ? 'Please select a gender' : null,
+        icon: Icon(Icons.arrow_drop_down_circle, color: Colors.purple.shade300, size: 20),
+        dropdownColor: Colors.white,
+        style: TextStyle(color: Colors.purple.shade800, fontSize: 14),
       ),
     );
   }
@@ -1104,88 +1210,219 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
       body: Stack(
         children: [
           Container(
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               image: DecorationImage(
                 image: AssetImage("assets/images/user_bg.png"),
                 fit: BoxFit.cover,
               ),
             ),
           ),
-          SingleChildScrollView(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: Card(
-                elevation: 5,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                color: const Color.fromARGB(19, 255, 255, 255).withAlpha(180),
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        GestureDetector(
-                          onTap: _pickProfilePhoto,
-                          child: Column(
-                            children: [
-                              _profileImage != null
-                                  ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(15),
-                                      child: Image.memory(
-                                        _profileImage!,
-                                        height: 120,
-                                        width: 120,
-                                        fit: BoxFit.cover,
-                                      ),
-                                    )
-                                  : CircleAvatar(
-                                      radius: 50,
-                                      backgroundColor: Colors.grey[300],
-                                      child: Icon(Icons.person,
-                                          size: 40, color: Colors.grey[700]),
-                                    ),
-                              SizedBox(height: 8),
-                              ElevatedButton.icon(
-                                onPressed: _pickProfilePhoto,
-                                icon: Icon(Icons.photo_library, size: 18),
-                                label: Text("Select Profile Photo"),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 30, 12, 70), // Adjusted padding for Realme P1
+              child: Center(
+                child: Column(
+                  children: [
+                    Container(
+                      constraints: const BoxConstraints(maxWidth: 360), // Adjusted for 1080px width
+                      child: Card(
+                        elevation: 6,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        color: Colors.white.withAlpha((0.85 * 255).toInt()),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16), // Reduced padding
+                          child: Form(
+                            key: _formKey,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.center,
+                              children: [
+                                const Text(
+                                  "Profile Details",
+                                  style: TextStyle(
+                                    fontSize: 22, // Slightly smaller
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.purple,
                                   ),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 16),
+                                GestureDetector(
+                                  onTap: _pickProfilePhoto,
+                                  child: Stack(
+                                    alignment: Alignment.bottomRight,
+                                    children: [
+                                      Container(
+                                        height: 100, // Reduced size
+                                        width: 100,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: Colors.purple.shade300, width: 2.5),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withAlpha((0.2 * 255).toInt()),
+                                              spreadRadius: 1,
+                                              blurRadius: 4,
+                                              offset: const Offset(0, 2),
+                                            ),
+                                          ],
+                                        ),
+                                        child: ClipRRect(
+                                          borderRadius: BorderRadius.circular(50),
+                                          child: _profileImage != null
+                                              ? Image.memory(
+                                                  _profileImage!,
+                                                  height: 100,
+                                                  width: 100,
+                                                  fit: BoxFit.cover,
+                                                )
+                                              : Image.asset(
+                                                  _selectedGender == 'Female'
+                                                      ? 'assets/images/female_profile.jpg'
+                                                      : 'assets/images/male_profile.jpg',
+                                                  height: 100,
+                                                  width: 100,
+                                                  fit: BoxFit.cover,
+                                                ),
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.all(3),
+                                        decoration: BoxDecoration(
+                                          color: Colors.purple.shade500,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: Colors.white, width: 1.5),
+                                        ),
+                                        child: const Icon(
+                                          Icons.camera_alt,
+                                          size: 16,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                _buildTextField(_nameController, "Name", Icons.person),
+                                _buildGenderDropdown(),
+                                _buildTextField(_phoneController, "Phone Number", Icons.phone, isNumeric: true),
+                                _buildTextField(_emailController, "Email", Icons.email),
+                                _buildTextField(_addressController, "Address", Icons.home),
+                                const SizedBox(height: 20),
+                                if (_isChanged && _allFieldsFilled())
+                                  Container(
+                                    width: double.infinity,
+                                    height: 45, // Slightly smaller
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(12),
+                                      gradient: LinearGradient(
+                                        colors: [Colors.purple.shade300, Colors.purple.shade700],
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.purple.withAlpha((0.4 * 255).toInt()),
+                                          spreadRadius: 1,
+                                          blurRadius: 4,
+                                          offset: const Offset(0, 2),
+                                        ),
+                                      ],
+                                    ),
+                                    child: ElevatedButton(
+                                      onPressed: _saveProfile,
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.transparent,
+                                        shadowColor: Colors.transparent,
+                                        elevation: 0,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: const [
+                                          Icon(Icons.save, color: Colors.white, size: 20),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            "Save Profile",
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                const SizedBox(height: 12),
+                              ],
+                            ),
                           ),
                         ),
-                        SizedBox(height: 16),
-                        _buildTextField(_nameController, "Name"),
-                        _buildTextField(_phoneController, "Phone Number", isNumeric: true),
-                        _buildTextField(_emailController, "Email"),
-                        _buildTextField(_addressController, "Address"),
-                        SizedBox(height: 20),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      width: 180, // Slightly smaller for better fit
+                      height: 50,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(25),
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFFFF416C), Color(0xFFFF4B2B)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.red.withAlpha((0.4 * 255).toInt()),
+                            spreadRadius: 1,
+                            blurRadius: 6,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                        border: Border.all(color: Colors.white.withAlpha((0.3 * 255).toInt()), width: 1.5),
+                      ),
+                      child: ElevatedButton(
+                        onPressed: _logout,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(25),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            if (_isChanged && _allFieldsFilled())
-                              _buildButton("Save Profile", Colors.green, _saveProfile),
+                            const Icon(
+                              Icons.logout,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              "Logout",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.1,
+                                shadows: [
+                                  Shadow(
+                                    color: Colors.black.withAlpha((0.3 * 255).toInt()),
+                                    offset: const Offset(1, 1),
+                                    blurRadius: 2,
+                                  ),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
-                      ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ),
-            ),
-          ),
-          Positioned(
-            top: 20,
-            right: 20,
-            child: IconButton(
-              onPressed: _logout,
-              icon: Icon(Icons.logout, color: Colors.red),
             ),
           ),
         ],
@@ -1193,28 +1430,20 @@ class _OwnerProfilePageState extends State<OwnerProfilePage> {
     );
   }
 
-  Widget _buildButton(String text, Color color, VoidCallback onPressed) {
-    return ElevatedButton(
-      onPressed: onPressed,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-      child: Text(text, style: TextStyle(color: Colors.white)),
-    );
-  }
-
   bool _allFieldsFilled() {
     return _nameController.text.isNotEmpty &&
         _phoneController.text.isNotEmpty &&
         _emailController.text.isNotEmpty &&
-        _addressController.text.isNotEmpty;
+        _addressController.text.isNotEmpty &&
+        _selectedGender != null;
   }
 }
+
 
 // ===============================
 // PET PROFILES PAGE (Manage Pet Profiles)
 // ===============================
+
 class PetProfilesPage extends StatefulWidget {
   const PetProfilesPage({super.key});
 
@@ -1227,32 +1456,117 @@ class _PetProfilesPageState extends State<PetProfilesPage> {
   final TextEditingController ageController = TextEditingController();
   String selectedGender = "Male";
   String selectedPetType = "Dog";
-  Uint8List? pickedImage; // Stores the selected pet image locally
-  Map<String, Uint8List> petImages = {}; // Store images locally by petId
+  Uint8List? pickedImage;
+  final ImagePicker _picker = ImagePicker();
+  final FirebaseStorage _storage = FirebaseStorage.instance;
+  bool isLoading = false;
 
-  // Function to pick an image
-  Future<void> pickImage() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.image);
-    if (result != null) {
-      setState(() {
-        pickedImage = result.files.first.bytes;
-      });
+  // Map of default pet images by type
+  final Map<String, String> defaultPetIcons = {
+    "Dog": "assets/images/default_dog.png",
+    "Cat": "assets/images/default_cat.jpg",
+    "Rabbit": "assets/images/default_rabbit.png",
+    "Hamster": "assets/images/default_hamster.png",
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _requestPermissions();
+    _loadDefaultPetImage(); // Load the default image for the initial pet type
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      await Permission.storage.request();
+      
+      if (await Permission.photos.request().isGranted) {
+        debugPrint("Photos permission granted");
+      }
     }
   }
 
-  // Function to save pet profile (without image in Firestore)
-  Future<void> savePetProfile() async {
-    if (petNameController.text.isEmpty || ageController.text.isEmpty || pickedImage == null) {
+  // Add method to load default pet image
+  Uint8List? defaultImageData; // Add this to your state variables
+
+Future<void> _loadDefaultPetImage() async {
+  try {
+    if (pickedImage == null) {
+      final asset = defaultPetIcons[selectedPetType]!;
+      final byteData = await rootBundle.load(asset);
+      setState(() {
+        defaultImageData = byteData.buffer.asUint8List();
+      });
+    }
+  } catch (e) {
+    debugPrint('Error loading default pet image: $e');
+  }
+}
+
+  Future<void> pickImage() async {
+    try {
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
+      );
+      
+      if (image != null) {
+        final imageBytes = await image.readAsBytes();
+        setState(() {
+          pickedImage = imageBytes;
+        });
+        
+        final prefs = await SharedPreferences.getInstance();
+        prefs.setString('temp_pet_image', base64Encode(imageBytes));
+      }
+    } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("All fields, including the pet photo, are required!"),
+        SnackBar(content: Text("Error picking image: $e")),
+      );
+    }
+  }
+
+  Future<String?> _uploadPetImage(String petId) async {
+    if (pickedImage == null) return null;
+    
+    try {
+      final ref = _storage.ref().child('pet_images/$petId.jpg');
+      final metadata = SettableMetadata(
+        contentType: 'image/jpeg',
+        customMetadata: {'picked-from': 'user-gallery'},
+      );
+      
+      await ref.putData(pickedImage!, metadata);
+      final url = await ref.getDownloadURL();
+      
+      final prefs = await SharedPreferences.getInstance();
+      prefs.remove('temp_pet_image');
+      
+      return url;
+    } catch (e) {
+      debugPrint('Error uploading pet image: $e');
+      return null;
+    }
+  }
+
+  Future<void> savePetProfile() async {
+    if (petNameController.text.isEmpty || ageController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Pet name and age are required!"),
           backgroundColor: Colors.red,
         ),
       );
       return;
     }
 
+    setState(() {
+      isLoading = true;
+    });
+
     try {
+      String defaultImageUrl = await _getDefaultPetImageUrl(selectedPetType);
+
       DocumentReference docRef = await FirebaseFirestore.instance.collection('pet_profiles').add({
         'name': petNameController.text,
         'age': ageController.text,
@@ -1261,25 +1575,43 @@ class _PetProfilesPageState extends State<PetProfilesPage> {
         'bio': '',
         'activities': [],
         'timestamp': FieldValue.serverTimestamp(),
+        'image_url': pickedImage == null ? defaultImageUrl : '',
+        'using_default_image': pickedImage == null,
       });
 
-      // Store image locally
+      String? imageUrl;
+      if (pickedImage != null) {
+        imageUrl = await _uploadPetImage(docRef.id);
+        if (imageUrl != null) {
+          await docRef.update({
+            'image_url': imageUrl,
+            'using_default_image': false,
+          });
+        }
+      }
+
       setState(() {
-        petImages[docRef.id] = pickedImage!; // Store image by petId
         petNameController.clear();
         ageController.clear();
         selectedGender = "Male";
         selectedPetType = "Dog";
         pickedImage = null;
+        isLoading = false;
       });
 
+      // Reset to default Dog image after saving
+      _loadDefaultPetImage();
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Text("Pet Profile Saved Successfully!"),
           backgroundColor: Colors.green,
         ),
       );
     } catch (e) {
+      setState(() {
+        isLoading = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Error saving profile: $e"),
@@ -1289,16 +1621,25 @@ class _PetProfilesPageState extends State<PetProfilesPage> {
     }
   }
 
-  // Function to delete a profile from Firestore
+  Future<String> _getDefaultPetImageUrl(String petType) async {
+    try {
+      // Return the asset path based on pet type
+      return defaultPetIcons[petType.toLowerCase().capitalize()] ?? 'assets/images/default_generic.jpg';
+    } catch (e) {
+      debugPrint('Error selecting default image: $e');
+      return 'assets/images/default_generic.jpg'; // Fallback to generic pet image
+    }
+  }
+
   void deleteProfile(String petId) async {
     try {
       await FirebaseFirestore.instance.collection('pet_profiles').doc(petId).delete();
-      setState(() {
-        petImages.remove(petId); // Remove the image from local storage
+      await _storage.ref().child('pet_images/$petId.jpg').delete().catchError((e) {
+        debugPrint('Error deleting pet image: $e');
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Text("Profile deleted successfully!"),
           backgroundColor: Colors.red,
         ),
@@ -1308,202 +1649,702 @@ class _PetProfilesPageState extends State<PetProfilesPage> {
     }
   }
 
+  Widget _buildImagePlaceholder() {
+    IconData petIcon = Icons.pets;
+    Color tintColor = Colors.amber;
+    
+    switch (selectedPetType) {
+      case "Dog":
+        petIcon = Icons.pets;
+        tintColor = Colors.brown;
+        break;
+      case "Cat":
+        petIcon = Icons.pets;
+        tintColor = Colors.grey;
+        break;
+      case "Rabbit":
+        petIcon = Icons.pets;
+        tintColor = Colors.white;
+        break;
+      case "Hamster":
+        petIcon = Icons.pets;
+        tintColor = Colors.orange;
+        break;
+    }
+    
+    return Container(
+      width: 100,
+      height: 100,
+      decoration: BoxDecoration(
+        color: Colors.grey[300],
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha((0.2 * 255).toInt()),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Center(
+        child: FutureBuilder<ByteData>(
+          future: rootBundle.load(defaultPetIcons[selectedPetType]!),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.done && snapshot.hasData) {
+              return ClipOval(
+                child: Image.memory(
+                  snapshot.data!.buffer.asUint8List(),
+                  width: 100,
+                  height: 100,
+                  fit: BoxFit.cover,
+                ),
+              );
+            } else {
+              return Icon(
+                petIcon,
+                size: 50,
+                color: tintColor,
+              );
+            }
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
-          // Background Image
-          Container(
+          Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.rotationX(math.pi),
+          child:Container(
             decoration: BoxDecoration(
               image: DecorationImage(
-                image: AssetImage("assets/images/petprofile_bg.jpg"),
+                image: const AssetImage("assets/images/petprofile_bg.jpg"),
                 fit: BoxFit.cover,
+                colorFilter: ColorFilter.mode(
+                  Colors.black.withAlpha((0.3 * 255).toInt()),
+                  BlendMode.darken,
+                ),
               ),
             ),
           ),
-          SingleChildScrollView(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: Card(
-                elevation: 5,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                color: Colors.white.withAlpha(200),
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      SizedBox(height: 10),
-                      Text(
-                        "Manage Pet Profiles",
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black),
-                      ),
-                      SizedBox(height: 20),
-                      TextField(
-                        controller: petNameController,
-                        decoration: InputDecoration(
-                          labelText: "Pet Name",
-                          border: OutlineInputBorder(),
+        ),
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  TweenAnimationBuilder(
+                    tween: Tween<double>(begin: 0, end: 1),
+                    duration: const Duration(milliseconds: 800),
+                    builder: (context, value, child) {
+                      return Opacity(
+                        opacity: value,
+                        child: Transform.translate(
+                          offset: Offset(0, 20 * (1 - value)),
+                          child: child,
                         ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha((0.85 * 255).toInt()),
+                        borderRadius: BorderRadius.circular(15),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha((0.1 * 255).toInt()),
+                            blurRadius: 10,
+                            spreadRadius: 1,
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 10),
-                      TextField(
-                        controller: ageController,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          labelText: "Age",
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      SizedBox(height: 10),
-                      DropdownButtonFormField<String>(
-                        value: selectedGender,
-                        items: ["Male", "Female"]
-                            .map((gender) => DropdownMenuItem(value: gender, child: Text(gender)))
-                            .toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            selectedGender = value!;
-                          });
-                        },
-                        decoration: InputDecoration(
-                          labelText: "Gender",
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      SizedBox(height: 10),
-                      DropdownButtonFormField<String>(
-                        value: selectedPetType,
-                        items: ["Dog", "Cat", "Rabbit", "Hamster"]
-                            .map((type) => DropdownMenuItem(value: type, child: Text(type)))
-                            .toList(),
-                        onChanged: (value) {
-                          setState(() {
-                            selectedPetType = value!;
-                          });
-                        },
-                        decoration: InputDecoration(
-                          labelText: "Pet Category",
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      SizedBox(height: 15),
-
-                      // Image Picker Section
-                      GestureDetector(
-                        onTap: pickImage,
-                        child: Column(
-                          children: [
-                            pickedImage != null
-                                ? ClipRRect(
-                                    borderRadius: BorderRadius.circular(15),
-                                    child: Image.memory(
-                                      pickedImage!,
-                                      height: 120,
-                                      width: 120,
-                                      fit: BoxFit.cover,
-                                    ),
-                                  )
-                                : CircleAvatar(
-                                    radius: 50,
-                                    backgroundColor: Colors.grey[300],
-                                    child: Icon(Icons.pets, size: 40, color: Colors.grey[700]),
-                                  ),
-                            SizedBox(height: 8),
-                            ElevatedButton.icon(
-                              onPressed: pickImage,
-                              icon: Icon(Icons.photo_library, size: 18),
-                              label: Text("Select Pet Photo"),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.blue,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.pets, size: 32, color: Colors.orange),
+                          const SizedBox(width: 16),
+                          const Text(
+                            "Manage Pet Profiles",
+                            style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-
-                      SizedBox(height: 20),
-                      ElevatedButton(
-                        onPressed: savePetProfile,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.orange,
-                          padding: EdgeInsets.symmetric(horizontal: 30, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: Text("Save Pet Profile", style: TextStyle(fontSize: 16, color: Colors.white)),
-                      ),
-                      SizedBox(height: 30),
-                      Text(
-                        "Your Pet Profiles",
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black),
-                      ),
-                      SizedBox(height: 20),
-                      StreamBuilder<QuerySnapshot>(
-                        stream: FirebaseFirestore.instance.collection('pet_profiles').snapshots(),
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState == ConnectionState.waiting) {
-                            return CircularProgressIndicator();
-                          }
-
-                          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                            return Text("No profiles saved yet!", style: TextStyle(fontSize: 18, color: Colors.grey));
-                          }
-
-                          var petProfiles = snapshot.data!.docs;
-
-                          return ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: petProfiles.length,
-                            itemBuilder: (context, index) {
-                              var pet = petProfiles[index].data() as Map<String, dynamic>;
-                              String petId = petProfiles[index].id;
-
-                              return ListTile(
-                                leading: petImages[petId] != null
-                                    ? ClipOval(
-                                        child: Image.memory(
-                                          petImages[petId]!,
-                                          width: 50,
-                                          height: 50,
-                                          fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  
+                  Card(
+                    elevation: 8,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    color: Colors.white.withAlpha((0.7 * 255).toInt()),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text(
+                            "Add New Pet",
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange[800],
+                            ),
+                          ),
+                          const SizedBox(height: 25),
+                          
+                          GestureDetector(
+                            onTap: pickImage,
+                            child: Column(
+                              children: [
+                                pickedImage != null
+                                    ? Container(
+                                        width: 120,
+                                        height: 120,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black26,
+                                              blurRadius: 8,
+                                              offset: const Offset(0, 3),
+                                            ),
+                                          ],
+                                        ),
+                                        child: ClipOval(
+                                          child: Image.memory(
+                                            pickedImage!,
+                                            width: 120,
+                                            height: 120,
+                                            fit: BoxFit.cover,
+                                          ),
                                         ),
                                       )
-                                    : Icon(Icons.pets, size: 40, color: Colors.grey),
-                                title: Text(pet['name'], style: TextStyle(fontWeight: FontWeight.bold)),
-                                subtitle: Text("${pet['age']} years old, ${pet['gender']}"),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      icon: Icon(Icons.edit, color: Colors.blue),
-                                      onPressed: () {
+                                    : _buildImagePlaceholder(),
+                                const SizedBox(height: 12),
+                                ElevatedButton.icon(
+                                  onPressed: pickImage,
+                                  icon: const Icon(Icons.photo_camera, size: 18),
+                                  label: const Text("Select Pet Photo"),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.blue[600],
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                                    elevation: 3,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                          
+                          TextField(
+                            controller: petNameController,
+                            decoration: InputDecoration(
+                              labelText: "Pet Name",
+                              hintText: "Enter your pet's name",
+                              prefixIcon: const Icon(Icons.favorite, color: Colors.pink),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(color: Colors.grey[400]!),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: Colors.orange, width: 2),
+                              ),
+                              filled: true,
+                              fillColor: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          TextField(
+                            controller: ageController,
+                            keyboardType: TextInputType.number,
+                            decoration: InputDecoration(
+                              labelText: "Age",
+                              hintText: "Enter your pet's age",
+                              prefixIcon: Icon(Icons.calendar_today, color: Colors.blue[700]),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: BorderSide(color: Colors.grey[400]!),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                borderSide: const BorderSide(color: Colors.orange, width: 2),
+                              ),
+                              filled: true,
+                              fillColor: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey[400]!),
+                              color: Colors.white,
+                            ),
+                            child: DropdownButtonFormField<String>(
+                              value: selectedGender,
+                              decoration: InputDecoration(
+                                labelText: "Gender",
+                                prefixIcon: Icon(
+                                  selectedGender == "Male" ? Icons.male : Icons.female,
+                                  color: selectedGender == "Male" ? Colors.blue : Colors.pink,
+                                ),
+                                border: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              ),
+                              items: ["Male", "Female"]
+                                  .map((gender) => DropdownMenuItem(value: gender, child: Text(gender)))
+                                  .toList(),
+                              onChanged: (value) {
+                                setState(() {
+                                  selectedGender = value!;
+                                });
+                              },
+                              icon: const Icon(Icons.arrow_drop_down_circle, color: Colors.orange),
+                              dropdownColor: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          
+                          Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey[400]!),
+                              color: Colors.white,
+                            ),
+                            child: DropdownButtonFormField<String>(
+                              value: selectedPetType,
+                              decoration: InputDecoration(
+                                labelText: "Pet Category",
+                                prefixIcon: const Icon(Icons.pets, color: Colors.brown),
+                                border: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              ),
+                              items: ["Dog", "Cat", "Rabbit", "Hamster"].map((type) {
+                                IconData iconData = Icons.pets;
+                                Color iconColor = Colors.brown;
+                                
+                                switch (type) {
+                                  case "Dog":
+                                    iconColor = Colors.brown;
+                                    break;
+                                  case "Cat":
+                                    iconColor = Colors.grey[700]!;
+                                    break;
+                                  case "Rabbit":
+                                    iconColor = Colors.grey[500]!;
+                                    break;
+                                  case "Hamster":
+                                    iconColor = Colors.orange[300]!;
+                                    break;
+                                }
+                                
+                                return DropdownMenuItem(
+                                  value: type,
+                                  child: Row(
+                                    children: [
+                                      Icon(iconData, color: iconColor, size: 20),
+                                      const SizedBox(width: 8),
+                                      Text(type),
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                              onChanged: (value) {
+                                setState(() {
+                                  selectedPetType = value!;
+                                  // Reset pickedImage to null and reload default image
+                                  if (pickedImage != null) {
+                                    showDialog(
+                                      context: context,
+                                      builder: (BuildContext context) {
+                                        return AlertDialog(
+                                          title: Text("Change Pet Type"),
+                                          content: const Text("Do you want to keep your current pet image or use the default for this pet type?"),
+                                          actions: [
+                                            TextButton(
+                                              child: const Text("Use Default"),
+                                              onPressed: () {
+                                                setState(() {
+                                                  pickedImage = null;
+                                                });
+                                                Navigator.of(context).pop();
+                                              },
+                                            ),
+                                            TextButton(
+                                              child: const Text("Keep Current"),
+                                              onPressed: () {
+                                                Navigator.of(context).pop();
+                                              },
+                                            ),
+                                          ],
+                                        );
+                                      },
+                                    );
+                                  }
+                                });
+                              },
+                              icon: const Icon(Icons.arrow_drop_down_circle, color: Colors.orange),
+                              dropdownColor: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          const SizedBox(height: 30),
+                          
+                          SizedBox(
+                            width: double.infinity,
+                            height: 50,
+                            child: ElevatedButton(
+                              onPressed: isLoading ? null : savePetProfile,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.orange,
+                                foregroundColor: Colors.white,
+                                disabledBackgroundColor: Colors.grey,
+                                elevation: 4,
+                                shadowColor: Colors.orange.withAlpha((0.5 * 255).toInt()),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                              ),
+                              child: isLoading
+                                  ? Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        SizedBox(
+                                          width: 20,
+                                          height: 20,
+                                          child: CircularProgressIndicator(
+                                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        const Text(
+                                          "Saving...",
+                                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    )
+                                  : Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        const Icon(Icons.save_alt, size: 20),
+                                        const SizedBox(width: 8),
+                                        const Text(
+                                          "Save Pet Profile",
+                                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  
+                  TweenAnimationBuilder(
+                    tween: Tween<double>(begin: 0, end: 1),
+                    duration: const Duration(milliseconds: 800),
+                    builder: (context, value, child) {
+                      return Opacity(
+                        opacity: value,
+                        child: Transform.translate(
+                          offset: Offset(0, 20 * (1 - value)),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha((0.85 * 255).toInt()),
+                        borderRadius: BorderRadius.circular(15),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withAlpha((0.1 * 255).toInt()),
+                            blurRadius: 10,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.pets, color: Colors.orange, size: 24),
+                              const SizedBox(width: 10),
+                              Text(
+                                "Your Pet Profiles",
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.orange[800],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          StreamBuilder<QuerySnapshot>(
+                            stream: FirebaseFirestore.instance.collection('pet_profiles').snapshots(),
+                            builder: (context, snapshot) {
+                              if (snapshot.connectionState == ConnectionState.waiting) {
+                                return Center(
+                                  child: CircularProgressIndicator(
+                                    valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
+                                  ),
+                                );
+                              }
+
+                              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                                return Container(
+                                  padding: const EdgeInsets.all(30),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.pets,
+                                        size: 60,
+                                        color: Colors.grey[400],
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        "No pet profiles yet",
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          color: Colors.grey[600],
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        "Add your first pet above",
+                                        style: TextStyle(
+                                          fontSize: 16,
+                                          color: Colors.grey[500],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
+
+                              var petProfiles = snapshot.data!.docs;
+
+                              return ListView.builder(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: petProfiles.length,
+                                itemBuilder: (context, index) {
+                                  var pet = petProfiles[index].data() as Map<String, dynamic>;
+                                  String petId = petProfiles[index].id;
+                                  String? imageUrl = pet['image_url'];
+                                  bool usingDefaultImage = pet['using_default_image'] ?? false;
+                                  
+                                  return Card(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    elevation: 3,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(15),
+                                    ),
+                                    child: InkWell(
+                                      onTap: () {
                                         Navigator.push(
                                           context,
                                           MaterialPageRoute(
                                             builder: (context) => PetProfileDetailPage(
-                                              petId: petId,  // ✅ Already passed
-                                              petImage: petImages[petId],  // ✅ FIXED: Now passing the pet image
+                                              petId: petId,
+                                              petImage: null,
                                             ),
                                           ),
                                         );
                                       },
+                                      borderRadius: BorderRadius.circular(15),
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              width: 70,
+                                              height: 70,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                boxShadow: [
+                                                  BoxShadow(
+                                                    color: Colors.black26,
+                                                    blurRadius: 6,
+                                                    offset: const Offset(0, 2),
+                                                  ),
+                                                ],
+                                              ),
+                                              child: ClipOval(
+                                                child: usingDefaultImage
+                                                    ? Image.asset(
+                                                        imageUrl!,
+                                                        width: 70,
+                                                        height: 70,
+                                                        fit: BoxFit.cover,
+                                                        errorBuilder: (context, error, stackTrace) {
+                                                          return _getPetTypeIcon(pet['type']);
+                                                        },
+                                                      )
+                                                    : (imageUrl != null && imageUrl.isNotEmpty
+                                                        ? Image.network(
+                                                            imageUrl,
+                                                            width: 70,
+                                                            height: 70,
+                                                            fit: BoxFit.cover,
+                                                            errorBuilder: (context, error, stackTrace) {
+                                                              return _getPetTypeIcon(pet['type']);
+                                                            },
+                                                            loadingBuilder: (context, child, loadingProgress) {
+                                                              if (loadingProgress == null) return child;
+                                                              return Center(
+                                                                child: CircularProgressIndicator(
+                                                                  value: loadingProgress.expectedTotalBytes != null
+                                                                      ? loadingProgress.cumulativeBytesLoaded /
+                                                                          loadingProgress.expectedTotalBytes!
+                                                                      : null,
+                                                                  strokeWidth: 2,
+                                                                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
+                                                                ),
+                                                              );
+                                                            },
+                                                          )
+                                                        : _getPetTypeIcon(pet['type'])),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 16),
+                                            
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    pet['name'],
+                                                    style: const TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 18,
+                                                      color: Colors.black87,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                  Text(
+                                                    "${pet['type']} • ${pet['age']} years • ${pet['gender']}",
+                                                    style: TextStyle(
+                                                      fontSize: 14,
+                                                      color: Colors.grey[600],
+                                                    ),
+                                                  ),
+                                                  if (pet['bio'] != null && pet['bio'].toString().isNotEmpty)
+                                                    Padding(
+                                                      padding: const EdgeInsets.only(top: 4),
+                                                      child: Text(
+                                                        pet['bio'],
+                                                        style: TextStyle(
+                                                          fontSize: 13,
+                                                          color: Colors.grey[600],
+                                                          fontStyle: FontStyle.italic,
+                                                        ),
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                            
+                                            Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Container(
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.blue[50],
+                                                    shape: BoxShape.circle,
+                                                  ),
+                                                  child: IconButton(
+                                                    icon: Icon(Icons.edit, color: Colors.blue[700], size: 22),
+                                                    onPressed: () {
+                                                      Navigator.push(
+                                                        context,
+                                                        MaterialPageRoute(
+                                                          builder: (context) => PetProfileDetailPage(
+                                                            petId: petId,
+                                                            petImage: null,
+                                                          ),
+                                                        ),
+                                                      );
+                                                    },
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 8),
+                                                Container(
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.red[50],
+                                                    shape: BoxShape.circle,
+                                                  ),
+                                                  child: IconButton(
+                                                    icon: Icon(Icons.delete, color: Colors.red[700], size: 22),
+                                                    onPressed: () {
+                                                      showDialog(
+                                                        context: context,
+                                                        builder: (BuildContext context) {
+                                                          return AlertDialog(
+                                                            title: Text("Delete ${pet['name']}?"),
+                                                            content: const Text("This action cannot be undone."),
+                                                            actions: [
+                                                              TextButton(
+                                                                child: const Text("Cancel"),
+                                                                onPressed: () {
+                                                                  Navigator.of(context).pop();
+                                                                },
+                                                              ),
+                                                              TextButton(
+                                                                child: const Text(
+                                                                  "Delete",
+                                                                  style: TextStyle(color: Colors.red),
+                                                                ),
+                                                                onPressed: () {
+                                                                  deleteProfile(petId);
+                                                                  Navigator.of(context).pop();
+                                                                },
+                                                              ),
+                                                            ],
+                                                          );
+                                                        },
+                                                      );
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
                                     ),
-                                    IconButton(
-                                      icon: Icon(Icons.delete, color: Colors.red),
-                                      onPressed: () => deleteProfile(petId),
-                                    ),
-                                  ],
-                                ),
+                                  );
+                                },
                               );
                             },
-                          );
-                        },
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
@@ -1511,271 +2352,588 @@ class _PetProfilesPageState extends State<PetProfilesPage> {
       ),
     );
   }
+
+  Widget _getPetTypeIcon(String petType) {
+    IconData icon = Icons.pets;
+    Color color = Colors.brown;
+    
+    switch (petType) {
+      case "Cat":
+        color = Colors.grey;
+        break;
+      case "Rabbit":
+        color = Colors.grey[400]!;
+        break;
+      case "Hamster":
+        color = Colors.orange[300]!;
+        break;
+      default: // Dog or any other
+        color = Colors.brown;
+    }
+    
+    return Container(
+      color: Colors.grey[200],
+      child: Center(
+        child: Icon(
+          icon,
+          size: 40,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    petNameController.dispose();
+    ageController.dispose();
+    super.dispose();
+  }
+}
+
+extension StringExtension on String {
+  String capitalize() {
+    return "${this[0].toUpperCase()}${substring(1)}";
+  }
 }
 
 // ===============================
-// PET DETAILS PAGE
+// Pet Profile Detail Page
 // ===============================
 
 class PetProfileDetailPage extends StatefulWidget {
-  final String petId; // Firestore document ID
-  final Uint8List? petImage; // Pet image passed from PetProfilesPage
+  final String petId;
+  final Uint8List? petImage;
 
-  const PetProfileDetailPage({super.key, required this.petId, required this.petImage});
+  const PetProfileDetailPage({
+    required this.petId,
+    required this.petImage,
+    super.key,
+  });
 
   @override
   _PetProfileDetailPageState createState() => _PetProfileDetailPageState();
 }
 
 class _PetProfileDetailPageState extends State<PetProfileDetailPage> {
-  Map<String, dynamic>? pet;
-  late TextEditingController bioController;
-  late TextEditingController activityController;
-  List<String> activities = [];
-  Uint8List? displayedPetImage; // Store the pet image locally to persist it
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController ageController = TextEditingController();
+  final TextEditingController bioController = TextEditingController();
+  final TextEditingController breedController = TextEditingController();
+  final TextEditingController customActivityController = TextEditingController();
+  String selectedGender = "Male";
+  String selectedPetType = "Dog";
+  bool isLoading = true;
+  bool isSaving = false;
+  
+  List<String> selectedActivities = [];
+  final List<Map<String, dynamic>> availableActivities = [
+    {"id": "walking", "name": "Walking", "icon": Icons.directions_walk},
+    {"id": "playing", "name": "Playing", "icon": Icons.sports_tennis},
+    {"id": "grooming", "name": "Grooming", "icon": Icons.content_cut},
+    {"id": "training", "name": "Training", "icon": Icons.school},
+    {"id": "veterinary", "name": "Veterinary", "icon": Icons.local_hospital},
+    {"id": "feeding", "name": "Feeding", "icon": Icons.restaurant},
+    {"id": "sleeping", "name": "Sleeping", "icon": Icons.hotel},
+    {"id": "bathing", "name": "Bathing", "icon": Icons.shower},
+  ];
+  List<Map<String, dynamic>> customActivities = [];
 
   @override
   void initState() {
     super.initState();
-    fetchPetDetails(); // Fetch pet details from Firestore
-    _loadPetImage(); // Load saved pet image from SharedPreferences
+    loadPetData();
   }
 
-  // Fetch pet details from Firebase Firestore
-  Future<void> fetchPetDetails() async {
+  Future<void> loadPetData() async {
     try {
-      DocumentSnapshot snapshot =
-          await FirebaseFirestore.instance.collection('pet_profiles').doc(widget.petId).get();
-      if (snapshot.exists) {
-        setState(() {
-          pet = snapshot.data() as Map<String, dynamic>;
-          bioController = TextEditingController(text: pet!['bio'] ?? '');
-          activities = List<String>.from(pet!['activities'] ?? []);
-          activityController = TextEditingController();
-        });
+      setState(() {
+        isLoading = true;
+      });
+      
+      final petDoc = await FirebaseFirestore.instance
+          .collection('pet_profiles')
+          .doc(widget.petId)
+          .get();
+      
+      if (!petDoc.exists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Pet profile not found!")),
+        );
+        Navigator.pop(context);
+        return;
       }
+      
+      var petData = petDoc.data() as Map<String, dynamic>;
+      
+      nameController.text = petData['name'] ?? '';
+      ageController.text = petData['age']?.toString() ?? '';
+      bioController.text = petData['bio'] ?? '';
+      breedController.text = petData['breed'] ?? '';
+      selectedGender = petData['gender'] ?? 'Male';
+      selectedPetType = petData['type'] ?? 'Dog';
+      
+      if (petData['activities'] != null) {
+        selectedActivities = List<String>.from(petData['activities']);
+        // Load custom activities from the database if they exist
+        for (String activity in selectedActivities) {
+          if (!availableActivities.any((a) => a['id'] == activity) &&
+              !customActivities.any((a) => a['id'] == activity)) {
+            customActivities.add({
+              'id': activity,
+              'name': activity,
+              'icon': Icons.pets,
+            });
+          }
+        }
+      }
+      
+      setState(() {
+        isLoading = false;
+      });
     } catch (e) {
-      debugPrint("Error fetching pet details: $e");
+      setState(() {
+        isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error loading pet data: $e")),
+      );
     }
   }
 
-  // Save pet image to SharedPreferences as base64
-
-  // Load pet image from SharedPreferences
-  Future<void> _loadPetImage() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? base64Image = prefs.getString('pet_image_base64');
-    if (base64Image != null) {
-      setState(() {
-        displayedPetImage = base64Decode(base64Image);
-      });
-    } else {
-      setState(() {
-        displayedPetImage = widget.petImage; // Use the image passed from the constructor
-      });
+  Future<void> savePetProfile() async {
+    if (nameController.text.isEmpty || ageController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Pet name and age are required!"),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
     }
-  }
 
-  // Save bio changes to Firebase
-  void _saveBio() async {
-    if (pet == null) return;
+    setState(() {
+      isSaving = true;
+    });
 
     try {
       await FirebaseFirestore.instance.collection('pet_profiles').doc(widget.petId).update({
-        'bio': bioController.text.trim(),
+        'name': nameController.text,
+        'age': ageController.text,
+        'gender': selectedGender,
+        'type': selectedPetType,
+        'breed': breedController.text,
+        'bio': bioController.text,
+        'activities': selectedActivities,
+        'last_updated': FieldValue.serverTimestamp(),
       });
 
       setState(() {
-        pet!['bio'] = bioController.text.trim();
+        isSaving = false;
       });
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("Bio updated successfully!")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Pet Profile Updated Successfully!"),
+          backgroundColor: Colors.green,
+        ),
+      );
     } catch (e) {
-      debugPrint("Error updating bio: $e");
+      setState(() {
+        isSaving = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error updating profile: $e"),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
-  // Add a new activity to Firebase
-  void _addActivity() async {
-    String activity = activityController.text.trim();
-    if (activity.isEmpty || pet == null) return;
-
-    try {
-      activities.add(activity);
-      await FirebaseFirestore.instance.collection('pet_profiles').doc(widget.petId).update({
-        'activities': activities,
-      });
-
+  void addCustomActivity() {
+    if (customActivityController.text.isNotEmpty) {
+      String newActivity = customActivityController.text.trim();
       setState(() {
-        pet!['activities'] = activities;
-        activityController.clear();
+        customActivities.add({
+          'id': newActivity,
+          'name': newActivity,
+          'icon': Icons.pets,
+        });
+        selectedActivities.add(newActivity);
+        customActivityController.clear();
       });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("Activity added successfully!")));
-    } catch (e) {
-      debugPrint("Error adding activity: $e");
-    }
-  }
-
-  // Edit an existing activity in Firebase
-
-  // Delete an activity from Firebase
-  void _deleteActivity(int index) async {
-    if (pet == null) return;
-
-    try {
-      activities.removeAt(index);
-      await FirebaseFirestore.instance.collection('pet_profiles').doc(widget.petId).update({
-        'activities': activities,
-      });
-
-      setState(() {
-        pet!['activities'] = activities;
-      });
-
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("Activity deleted successfully!")));
-    } catch (e) {
-      debugPrint("Error deleting activity: $e");
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (pet == null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Colors.white)),
-      );
-    }
-
     return Scaffold(
       appBar: AppBar(
-        title: Text('${pet!['name']}\'s Profile',
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-        backgroundColor: const Color.fromARGB(123, 57, 57, 57),
-        elevation: 5,
+        title: Text("Edit Pet Profile"),
+        backgroundColor: Colors.pink[300],
+        elevation: 0,
       ),
-      backgroundColor: const Color.fromARGB(199, 48, 48, 48), // Dark theme background
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            // Pet Image at the Top in Circle
-            Center(
-              child: displayedPetImage != null
-                  ? CircleAvatar(
-                      radius: 60,
-                      backgroundImage: MemoryImage(displayedPetImage!),
-                    )
-                  : CircleAvatar(
-                      radius: 60,
-                      backgroundColor: Colors.grey[700],
-                      child: Icon(Icons.pets, size: 50, color: Colors.white),
-                    ),
-            ),
-            SizedBox(height: 20),
-
-            // Pet Profile Info Card
-            Card(
-              color: Colors.grey[900], // Dark theme card
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-              elevation: 10,
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    // Pet Name
-                    Text('${pet!['name']} (${pet!['type']})',
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.yellowAccent)),
-                    SizedBox(height: 8),
-                    Text('Age: ${pet!['age']} | Gender: ${pet!['gender']}',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.white70)),
-                    SizedBox(height: 8),
-                    Text(pet!['bio'].isNotEmpty ? pet!['bio'] : 'No bio available',
-                        textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: Colors.white54)),
-                    SizedBox(height: 15),
-                    // Edit Bio Section
-                    TextField(
-                      controller: bioController,
-                      style: TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: 'Add a bio for ${pet!['name']}...',
-                        hintStyle: TextStyle(color: Colors.white60),
-                        fillColor: Colors.grey[800],
-                        filled: true,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
-                    ),
-                    SizedBox(height: 10),
-                    ElevatedButton(
-                      onPressed: _saveBio,
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                      child: Text("Save Bio"),
-                    ),
-                  ],
-                ),
+      body: isLoading
+          ? Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.pink),
               ),
-            ),
-            SizedBox(height: 30),
-            // Favorite Activities Section
-            Card(
-              color: const Color.fromARGB(255, 31, 31, 31),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-              elevation: 5,
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    Text("Favorite Activities",
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.orange)),
-                    SizedBox(height: 10),
-                    TextField(
-                      controller: activityController,
-                      style: TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: 'Add a new activity...',
-                        hintStyle: TextStyle(color: Colors.white60),
-                        fillColor: Colors.grey[800],
-                        filled: true,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                      ),
+            )
+          : Stack(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.pink[200]!.withAlpha((0.7 * 255).toInt()),
+                        Colors.yellow[100]!.withAlpha((0.6 * 255).toInt()),
+                        Colors.white,
+                      ],
+                      stops: [0.0, 0.4, 1.0],
                     ),
-                    SizedBox(height: 10),
-                    ElevatedButton(
-                      onPressed: _addActivity,
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                      child: Text("Add Activity"),
-                    ),
-                    SizedBox(height: 15),
-                    activities.isEmpty
-                        ? Text("No activities added yet!", style: TextStyle(fontSize: 16, color: Colors.white54))
-                        : ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: activities.length,
-                            itemBuilder: (context, index) {
-                              return ListTile(
-                                title: Text(activities[index], style: TextStyle(color: Colors.white, fontSize: 16)),
-                                trailing: IconButton(
-                                  icon: Icon(Icons.delete, color: Colors.red),
-                                  onPressed: () => _deleteActivity(index),
+                  ),
+                ),
+                SafeArea(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Card(
+                          elevation: 4,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  "Basic Information",
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.pink[800],
+                                  ),
                                 ),
-                              );
-                            },
+                                SizedBox(height: 16),
+                                
+                                TextField(
+                                  controller: nameController,
+                                  decoration: InputDecoration(
+                                    labelText: "Pet Name",
+                                    prefixIcon: Icon(Icons.pets, color: Colors.pink),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 16),
+                                
+                                TextField(
+                                  controller: ageController,
+                                  keyboardType: TextInputType.number,
+                                  decoration: InputDecoration(
+                                    labelText: "Age",
+                                    prefixIcon: Icon(Icons.calendar_today, color: Colors.pink),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 16),
+                                
+                                DropdownButtonFormField<String>(
+                                  value: selectedGender,
+                                  decoration: InputDecoration(
+                                    labelText: "Gender",
+                                    prefixIcon: Icon(
+                                      selectedGender == "Male" ? Icons.male : Icons.female,
+                                      color: selectedGender == "Male" ? Colors.blue : Colors.pink,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                  items: ["Male", "Female"]
+                                      .map((gender) => DropdownMenuItem(value: gender, child: Text(gender)))
+                                      .toList(),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      selectedGender = value!;
+                                    });
+                                  },
+                                ),
+                                SizedBox(height: 16),
+                                
+                                DropdownButtonFormField<String>(
+                                  value: selectedPetType,
+                                  decoration: InputDecoration(
+                                    labelText: "Pet Type",
+                                    prefixIcon: Icon(Icons.category, color: Colors.pink),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                  items: ["Dog", "Cat", "Rabbit", "Hamster"]
+                                      .map((type) => DropdownMenuItem(value: type, child: Text(type)))
+                                      .toList(),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      selectedPetType = value!;
+                                    });
+                                  },
+                                ),
+                                SizedBox(height: 16),
+                                
+                                TextField(
+                                  controller: breedController,
+                                  decoration: InputDecoration(
+                                    labelText: "Breed",
+                                    prefixIcon: Icon(Icons.pets, color: Colors.pink),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: 16),
+                                
+                                TextField(
+                                  controller: bioController,
+                                  maxLines: 3,
+                                  decoration: InputDecoration(
+                                    labelText: "Pet Bio",
+                                    hintText: "Tell us about your pet...",
+                                    prefixIcon: Icon(Icons.description, color: Colors.pink),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    alignLabelWithHint: true,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                  ],
+                        ),
+                        SizedBox(height: 24),
+                        
+                        Card(
+                          elevation: 4,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          child: Padding(
+                            padding: EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.local_activity, color: Colors.pink[800]),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      "Pet Activities",
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.pink[800],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 16),
+                                
+                                Text(
+                                  "Select activities that your pet enjoys:",
+                                  style: TextStyle(
+                                    color: Colors.grey[700],
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                SizedBox(height: 12),
+                                
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 12,
+                                  children: [
+                                    ...availableActivities.map((activity) {
+                                      bool isSelected = selectedActivities.contains(activity['id']);
+                                      return GestureDetector(
+                                        onTap: () {
+                                          setState(() {
+                                            if (isSelected) {
+                                              selectedActivities.remove(activity['id']);
+                                            } else {
+                                              selectedActivities.add(activity['id']);
+                                            }
+                                          });
+                                        },
+                                        child: Container(
+                                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                          decoration: BoxDecoration(
+                                            color: isSelected ? Colors.pink : Colors.grey[200],
+                                            borderRadius: BorderRadius.circular(20),
+                                            boxShadow: isSelected
+                                                ? [
+                                                    BoxShadow(
+                                                      color: Colors.pink.withAlpha((0.3 * 255).toInt()),
+                                                      blurRadius: 5,
+                                                      offset: Offset(0, 2),
+                                                    )
+                                                  ]
+                                                : null,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                activity['icon'] as IconData,
+                                                size: 18,
+                                                color: isSelected ? Colors.white : Colors.grey[700],
+                                              ),
+                                              SizedBox(width: 6),
+                                              Text(
+                                                activity['name'],
+                                                style: TextStyle(
+                                                  color: isSelected ? Colors.white : Colors.grey[700],
+                                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    }),
+                                    ...customActivities.map((activity) {
+                                      bool isSelected = selectedActivities.contains(activity['id']);
+                                      return GestureDetector(
+                                        onTap: () {
+                                          setState(() {
+                                            if (isSelected) {
+                                              selectedActivities.remove(activity['id']);
+                                            } else {
+                                              selectedActivities.add(activity['id']);
+                                            }
+                                          });
+                                        },
+                                        child: Container(
+                                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                          decoration: BoxDecoration(
+                                            color: isSelected ? Colors.pink : Colors.grey[200],
+                                            borderRadius: BorderRadius.circular(20),
+                                            boxShadow: isSelected
+                                                ? [
+                                                    BoxShadow(
+                                                      color: Colors.pink.withAlpha((0.3 * 255).toInt()),
+                                                      blurRadius: 5,
+                                                      offset: Offset(0, 2),
+                                                    )
+                                                  ]
+                                                : null,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                activity['icon'] as IconData,
+                                                size: 18,
+                                                color: isSelected ? Colors.white : Colors.grey[700],
+                                              ),
+                                              SizedBox(width: 6),
+                                              Text(
+                                                activity['name'],
+                                                style: TextStyle(
+                                                  color: isSelected ? Colors.white : Colors.grey[700],
+                                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    }),
+                                  ],
+                                ),
+                                SizedBox(height: 16),
+                                
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: TextField(
+                                        controller: customActivityController,
+                                        decoration: InputDecoration(
+                                          labelText: "Add Custom Activity",
+                                          prefixIcon: Icon(Icons.add_circle, color: Colors.pink),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    SizedBox(width: 8),
+                                    SizedBox(
+                                      height: 56, // Match the height of the TextField
+                                      child: ElevatedButton(
+                                        onPressed: addCustomActivity,
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.pink[300],
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          padding: EdgeInsets.symmetric(horizontal: 16), // Add some horizontal padding
+                                        ),
+                                        child: Text("Add"),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        SizedBox(height: 30),
+                        
+                        SizedBox(
+                          width: double.infinity,
+                          height: 50,
+                          child: ElevatedButton(
+                            onPressed: isSaving ? null : savePetProfile,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.pink,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              elevation: 4,
+                            ),
+                            child: isSaving
+                                ? CircularProgressIndicator(
+                                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                    strokeWidth: 2,
+                                  )
+                                : Text(
+                                    "Save Changes",
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
-        ),
-      ),
     );
   }
-}
 
+  @override
+  void dispose() {
+    nameController.dispose();
+    ageController.dispose();
+    bioController.dispose();
+    breedController.dispose();
+    customActivityController.dispose();
+    super.dispose();
+  }
+}
 
 // ------------------------------
 // VET APPOINTMENT PAGE
@@ -2090,17 +3248,24 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
   final _mealController = TextEditingController();
   TimeOfDay? selectedTime;
   String? selectedPet;
-  List<Map<String, dynamic>> dietMeals = []; // Store the diet meal details
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance; // Firestore instance
+  List<Map<String, dynamic>> dietMeals = [];
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = 
+      FlutterLocalNotificationsPlugin();
 
   @override
   void initState() {
     super.initState();
-    _loadDietMeals(); // Load diet meals from Firestore when the page is initialized
+    tz.initializeTimeZones();
+    _initializeNotifications();
+    _loadDietMeals();
   }
 
   void _pickTime() async {
-    final time = await showTimePicker(context: context, initialTime: TimeOfDay.now());
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
     if (time != null) {
       setState(() {
         selectedTime = time;
@@ -2108,9 +3273,79 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
     }
   }
 
-  void _addMeal() async {
+  Future<void> _initializeNotifications() async {
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initializationSettings = InitializationSettings(
+      android: initializationSettingsAndroid,
+    );
+    
+// Request permissions
+    if (await Permission.notification.request().isDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Notification permission is required for reminders')),
+      );
+    }
+    if (await Permission.scheduleExactAlarm.request().isDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Alarm permission is required for exact timing')),
+      );
+    }
+
+    await flutterLocalNotificationsPlugin.initialize(
+      initializationSettings,
+      onDidReceiveNotificationResponse: (response) {},
+    );
+
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'meal_reminder_channel',
+      'Meal Reminders',
+      description: 'Notifications for meal reminders',
+      importance: Importance.max,
+    );
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
+   Future<void> _scheduleNotification(int hour, int minute, String mealName, String petName, String mealId) async {
+    final scheduledTime = _nextInstanceOfTime(hour, minute);
+
+    await flutterLocalNotificationsPlugin.zonedSchedule(
+      mealId.hashCode, // Use meal ID for uniqueness
+      'Meal Reminder for $petName',
+      'Time to feed $petName: $mealName',
+      scheduledTime,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'meal_reminder_channel',
+          'Meal Reminders',
+          channelDescription: 'Notifications for meal reminders',
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+        ),
+      ),
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      matchDateTimeComponents: DateTimeComponents.time,
+    );
+  }
+
+  tz.TZDateTime _nextInstanceOfTime(int hour, int minute) {
+    final now = tz.TZDateTime.now(tz.local);
+    var scheduledTime = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
+    
+    if (scheduledTime.isBefore(now)) {
+      scheduledTime = scheduledTime.add(const Duration(days: 1));
+    }
+    return scheduledTime;
+  }
+
+  Future<void> _addMeal() async {
     if (_mealController.text.trim().isEmpty || selectedTime == null || selectedPet == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Select pet, enter meal, and pick time')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Select pet, enter meal, and pick time')));
       return;
     }
 
@@ -2119,44 +3354,56 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
       'meal': mealName,
       'time': selectedTime!.format(context),
       'pet': selectedPet,
-      'userId': FirebaseAuth.instance.currentUser?.uid, // Add user ID to associate meals with users
+      'userId': FirebaseAuth.instance.currentUser?.uid,
       'hour': selectedTime!.hour,
       'minute': selectedTime!.minute,
     };
 
-    // Save meal data to Firestore
-    await _firestore.collection('dietMeals').add(mealData);
+    final docRef = await _firestore.collection('dietMeals').add(mealData);
+    mealData['id'] = docRef.id;
 
-    // Update the local list (optional, but it will reflect instantly)
     setState(() {
       dietMeals.add(mealData);
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Meal Reminder Added')));
+    final isPM = selectedTime!.hour >= 12;
+    final adjustedHour = isPM && selectedTime!.hour != 12
+        ? selectedTime!.hour + 12
+        : (selectedTime!.hour == 12 && !isPM ? 0 : selectedTime!.hour);
 
+    await _scheduleNotification(
+      adjustedHour,
+      selectedTime!.minute,
+      mealName,
+      selectedPet!,
+      docRef.id,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Meal Reminder Added')));
     _mealController.clear();
-    selectedTime = null;
+    setState(() {
+      selectedTime = null;
+    });
   }
 
-  void _deleteMeal(int index) async {
+  Future<void> _deleteMeal(int index) async {
     final meal = dietMeals[index];
     final mealId = meal['id'];
 
-    // Remove meal from Firestore
     await _firestore.collection('dietMeals').doc(mealId).delete();
+    await flutterLocalNotificationsPlugin.cancel(mealId.hashCode);
 
     setState(() {
-      dietMeals.removeAt(index);  // Remove meal from the list
+      dietMeals.removeAt(index);
     });
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Meal Reminder Removed')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Meal Reminder Removed')));
   }
 
   Future<void> _loadDietMeals() async {
     final userId = FirebaseAuth.instance.currentUser?.uid;
-
     if (userId != null) {
       final snapshot = await _firestore.collection('dietMeals')
-          .where('userId', isEqualTo: userId) // Filter meals by the current user
+          .where('userId', isEqualTo: userId)
           .get();
 
       setState(() {
@@ -2167,9 +3414,29 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
             'time': data['time'],
             'pet': data['pet'],
             'id': doc.id,
+            'hour': data['hour'],
+            'minute': data['minute'],
           };
         }).toList();
       });
+
+      // Schedule all loaded meals
+      for (final meal in dietMeals) {
+        final timeParts = meal['time'].split(' ');
+        final time = timeParts[0].split(':');
+        final hour = int.parse(time[0]);
+        final minute = int.parse(time[1]);
+        final isPM = timeParts[1] == 'PM';
+        final adjustedHour = isPM && hour != 12 ? hour + 12 : (hour == 12 && !isPM ? 0 : hour);
+
+        await _scheduleNotification(
+          adjustedHour,
+          minute,
+          meal['meal'],
+          meal['pet'],
+          meal['id'],
+        );
+      }
     }
   }
 
@@ -2190,15 +3457,15 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
           children: [
             Image.asset(imagePath, height: 100, width: 100, fit: BoxFit.cover),
             Padding(
-              padding: EdgeInsets.all(8),
+              padding: const EdgeInsets.all(8),
               child: Column(
                 children: [
-                  Text(name, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
-                  Text(price, style: TextStyle(color: Colors.green)),
+                  Text(name, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                  Text(price, style: const TextStyle(color: Colors.green)),
                   ElevatedButton(
                     onPressed: () => launchUrl(Uri.parse(url)),
                     style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                    child: Text('Buy Now'),
+                    child: const Text('Buy Now'),
                   ),
                 ],
               ),
@@ -2213,107 +3480,98 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-      title: Text(
-      'Diet Tracker',
-      style: TextStyle(color: Colors.white), // Set the text color to white
-      ),
-      backgroundColor: const Color.fromARGB(221, 41, 41, 41),
-      iconTheme: IconThemeData(color: Colors.white),
+        title: const Text(
+          'Diet Tracker',
+          style: TextStyle(color: Colors.white),
+        ),
+        backgroundColor: const Color.fromARGB(221, 41, 41, 41),
+        iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: Container(
-        decoration: BoxDecoration(
+        decoration: const BoxDecoration(
           image: DecorationImage(image: AssetImage('assets/images/diet_bg.jpg'), fit: BoxFit.cover),
         ),
         child: ListView(
-          padding: EdgeInsets.all(16),
+          padding: const EdgeInsets.all(16),
           children: [
-            // Dropdown for Pet Selection with Black Background and White Font for Text
             DropdownButtonFormField<String>( 
               value: selectedPet,
               decoration: InputDecoration(
                 labelText: 'Select Pet',
-                labelStyle: TextStyle(color: const Color.fromARGB(255, 0, 0, 0)),
+                labelStyle: const TextStyle(color: Color.fromARGB(255, 0, 0, 0)),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
                 filled: true,
-                fillColor: const Color.fromARGB(111, 159, 158, 158), // Slightly darker white
+                fillColor: const Color.fromARGB(111, 159, 158, 158),
               ),
               items: ['Cat', 'Dog', 'Rabbit', 'Hamster']
                   .map((pet) => DropdownMenuItem(
                         value: pet,
-                        child: Text(pet, style: TextStyle(color: Colors.black)), // Text inside dropdown items black
+                        child: Text(pet, style: const TextStyle(color: Colors.black)),
                       ))
                   .toList(),
               onChanged: (val) => setState(() => selectedPet = val),
             ),
-            SizedBox(height: 10),
-
-            // Meal Name Input Field
+            const SizedBox(height: 10),
             TextField(
               controller: _mealController,
-              style: TextStyle(color: Colors.black), // Black text in the input field
+              style: const TextStyle(color: Colors.black),
               decoration: InputDecoration(
                 labelText: 'Meal Name',
-                labelStyle: TextStyle(color: const Color.fromARGB(255, 0, 0, 0)),
+                labelStyle: const TextStyle(color: Color.fromARGB(255, 0, 0, 0)),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
                 filled: true,
-                fillColor: const Color.fromARGB(111, 159, 158, 158), // Slightly darker white
+                fillColor: const Color.fromARGB(111, 159, 158, 158),
               ),
             ),
-            SizedBox(height: 10),
-
-            // Row with two buttons: Pick Time and Add Meal
+            const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // First Button - Pick Time
                 SizedBox(
-                  width: 150, // Adjust the width as needed
+                  width: 150,
                   child: ElevatedButton(
                     onPressed: _pickTime,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.yellow,
-                      padding: EdgeInsets.symmetric(vertical: 16, horizontal: 16), // Increased height
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)), // Same border radius
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                     ),
                     child: Text(
                       selectedTime == null ? 'Pick Time' : selectedTime!.format(context),
-                      style: TextStyle(
+                      style: const TextStyle(
                         color: Colors.black,
-                        fontSize: 16, // Adjusted font size to match previous buttons
-                        fontWeight: FontWeight.w500, // Medium weight for better text appearance
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
                 ),
-                SizedBox(width: 10), // Adds space between the buttons
-                // Second Button - Add Meal
+                const SizedBox(width: 10),
                 SizedBox(
-                  width: 150, // Adjust the width as needed
+                  width: 150,
                   child: ElevatedButton(
                     onPressed: _addMeal,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.green,
-                      padding: EdgeInsets.symmetric(vertical: 16, horizontal: 16), // Increased height
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)), // Same border radius
+                      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                     ),
-                    child: Text(
+                    child: const Text(
                       'Add Meal',
                       style: TextStyle(
-                        fontSize: 16, // Adjusted font size to match previous buttons
-                        fontWeight: FontWeight.w500, // Medium weight for better text appearance
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
                 ),
               ],
             ),
-            SizedBox(height: 20),
-
-            // Use ListView.builder inside a SizedBox to avoid overflow issues
+            const SizedBox(height: 20),
             if (dietMeals.isNotEmpty)
               ListView.builder(
                 shrinkWrap: true,
-                physics: NeverScrollableScrollPhysics(),
+                physics: const NeverScrollableScrollPhysics(),
                 itemCount: dietMeals.length,
                 itemBuilder: (context, index) {
                   final meal = dietMeals[index];
@@ -2322,39 +3580,37 @@ class _DietTrackerPageState extends State<DietTrackerPage> {
                     elevation: 5,
                     color: Colors.grey[850],
                     child: ListTile(
-                      leading: Icon(Icons.fastfood, color: Colors.orangeAccent),
-                      title: Text('${meal['meal']} for ${meal['pet']}', style: TextStyle(color: Colors.white)),
-                      subtitle: Text('At: ${meal['time']}', style: TextStyle(color: Colors.white)),
+                      leading: const Icon(Icons.fastfood, color: Colors.orangeAccent),
+                      title: Text('${meal['meal']} for ${meal['pet']}', style: const TextStyle(color: Colors.white)),
+                      subtitle: Text('At: ${meal['time']}', style: const TextStyle(color: Colors.white)),
                       trailing: IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
+                        icon: const Icon(Icons.delete, color: Colors.red),
                         onPressed: () => _deleteMeal(index),
                       ),
                     ),
                   );
                 },
               ),
-            SizedBox(height: 20),
-
-            // Styled heading
-            Text(
+            const SizedBox(height: 20),
+            const Text(
               'Recommended Food Items',
               style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
-                color: Colors.black, // Black color for heading
-                fontFamily: 'Roboto', // A stylish font
-                letterSpacing: 1.5, // Adds spacing for a modern look
+                color: Colors.black,
+                fontFamily: 'Roboto',
+                letterSpacing: 1.5,
               ),
             ),
             SizedBox(
-              height: 250, // Adjust height to prevent overflow
+              height: 250,
               child: Card(
                 color: Colors.grey[850],
                 elevation: 5,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 child: Container(
-                  padding: EdgeInsets.symmetric(horizontal: 10), // Add horizontal padding to the card
-                  width: MediaQuery.of(context).size.width * 0.95, // Increase width to 85% of screen width
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  width: MediaQuery.of(context).size.width * 0.95,
                   child: ListView(
                     scrollDirection: Axis.horizontal,
                     children: [
@@ -3640,12 +4896,16 @@ class PetProfilePage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${pet['name']}\'s Profile'),
-        backgroundColor: Colors.black87,
+        title: Text(
+        '${pet['name']}\'s Profile',
+        style: TextStyle(color: Colors.white),
       ),
-      body: Container(
-        padding: EdgeInsets.all(16),
-        color: Colors.black87,
+      backgroundColor: Colors.black87,
+      iconTheme: IconThemeData(color: Colors.white),
+    ),
+    body: Container(
+      padding: EdgeInsets.all(16),
+      color: Colors.black87,
         child: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
